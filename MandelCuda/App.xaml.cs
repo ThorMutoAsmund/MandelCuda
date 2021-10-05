@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Input;
+using System.Diagnostics;
 
 // Intorduction
 // https://stackoverflow.com/questions/30544082/how-to-pass-large-buffers-to-opencl-devices
@@ -21,32 +22,27 @@ using System.Windows.Input;
 
 namespace MandelCuda
 {
-    enum RenderingStrategy
-    {
-        IterationsOut,
-        ColorOut
-    }
-
     class Program
     {
-        static int maxIter = 128*512;
+        static int maxIter = 32*256;
         static int N = 1024;
-        static int kernelSize = 1024;
 
         static WriteableBitmap writeableBitmap;
         static Window window;
         static Image image;
+        static Label debugLabel;
+        static Panel grid;
 
-        static float ymin;
-        static float xmin;
-        static float width; 
+        static double ymin;
+        static double xmin;
+        static double width; 
         static int[] message;
         static int[] gradient;
 
         static int gradientLength;
 
-        static float mouseymin;
-        static float mousexmin;
+        static double mouseymin;
+        static double mousexmin;
         static Point mouseOrig;
         static bool moving;
 
@@ -59,16 +55,29 @@ namespace MandelCuda
         static ComputeBuffer<int> gradientBuffer;
         static int messageSize;
 
-        static RenderingStrategy renderingStrategy = RenderingStrategy.ColorOut;
+        static bool useDoublePrecision = false;
         static int coclorCycle = 0;
-        static int colorCycleFrameIncrement = 1;
+        static int colorCycleFrameIncrement = 0;
 
         [STAThread]
         static void Main(string[] args)
         {
+            grid = new Grid();
+
             image = new Image();
             RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
             RenderOptions.SetEdgeMode(image, EdgeMode.Aliased);
+
+            debugLabel = new Label();
+            debugLabel.Content = "Debug information";
+            debugLabel.Foreground = new SolidColorBrush(Colors.White);
+            debugLabel.Background = new SolidColorBrush(Color.FromArgb(150,100,100,100));
+            debugLabel.Width = 240;
+            debugLabel.Height = 28;
+            debugLabel.VerticalAlignment = VerticalAlignment.Top;
+
+            grid.Children.Add(image);
+            grid.Children.Add(debugLabel);
 
             window = new Window()
             {
@@ -77,7 +86,7 @@ namespace MandelCuda
                 Title = "MandelCuda - Mandelbrot rendered with nvidia CUDA",
                 ResizeMode = ResizeMode.NoResize
             };
-            window.Content = image;
+            window.Content = grid;
             window.Show();
 
             writeableBitmap = new WriteableBitmap(
@@ -114,27 +123,18 @@ namespace MandelCuda
             message = new int[N * N];
             messageSize = message.Length;
 
-            switch (renderingStrategy)
-            {
-                case RenderingStrategy.IterationsOut:
-                    SetupCUDA("Mandel3.cl");
-                    kernel.SetMemoryArgument(0, messageBuffer);
-                    kernel.SetValueArgument(1, N);
-                    break;
-
-                case RenderingStrategy.ColorOut:
-                    SetupCUDA("Mandel4.cl");
-                    kernel.SetMemoryArgument(0, messageBuffer);
-                    kernel.SetValueArgument(1, N);
-                    kernel.SetMemoryArgument(2, gradientBuffer);
-                    kernel.SetValueArgument(3, gradientLength);                    
-                    break;
-            }
+            SetupCUDA(useDoublePrecision ? "Mandel4d.cl" : "Mandel4s.cl");
+            kernel.SetMemoryArgument(0, messageBuffer);
+            kernel.SetValueArgument(1, N);
+            kernel.SetMemoryArgument(2, gradientBuffer);
+            kernel.SetValueArgument(3, gradientLength);                    
 
             GenerateMandelBrot();
             
             Application app = new Application();
             app.Run();
+            
+            TearDownCUDA();
         }
 
         private static void I_MouseMove(object sender, MouseEventArgs e)
@@ -164,8 +164,8 @@ namespace MandelCuda
             float y = (float)(pos.Y / N);
             float x = (float)(pos.X / N);
 
-            float ycenter = ymin + width * y;
-            float xcenter = xmin + width * x;
+            double ycenter = ymin + width * y;
+            double xcenter = xmin + width * x;
 
             width = width * m;
             ymin = ycenter - width*y;
@@ -193,6 +193,19 @@ namespace MandelCuda
 
                 }
             }
+        }
+
+        static void TearDownCUDA()
+        {
+            context.Dispose();
+            queue.Dispose();
+            kernel.Dispose();
+            messageBuffer.Dispose();
+            if (gradientBuffer != null)
+            {
+                gradientBuffer.Dispose();
+            }
+            program.Dispose();
         }
 
         // 26 ms 4096x4096@512 iter with 1024 cores
@@ -225,120 +238,41 @@ namespace MandelCuda
                 kernel = program.CreateKernel("mandel");
 
                 // allocate a memory buffer with the message
-                switch (renderingStrategy)
-                {
-                    case RenderingStrategy.IterationsOut:
-                        messageBuffer = new ComputeBuffer<int>(context,
-                            ComputeMemoryFlags.WriteOnly | ComputeMemoryFlags.UseHostPointer, message);
-                        break;
-                    case RenderingStrategy.ColorOut:
-                        messageBuffer = new ComputeBuffer<int>(context,
-                            ComputeMemoryFlags.WriteOnly | ComputeMemoryFlags.UseHostPointer, message);
-                        gradientBuffer = new ComputeBuffer<int>(context,
-                            ComputeMemoryFlags.ReadOnly | ComputeMemoryFlags.UseHostPointer, gradient);
-                        break;
-                }
-
+                messageBuffer = new ComputeBuffer<int>(context,
+                    ComputeMemoryFlags.WriteOnly | ComputeMemoryFlags.UseHostPointer, message);
+                gradientBuffer = new ComputeBuffer<int>(context,
+                    ComputeMemoryFlags.ReadOnly | ComputeMemoryFlags.UseHostPointer, gradient);
                 streamReader.Close();
             }
         }
 
         static void GenerateMandelBrot()
         {
-            switch (renderingStrategy)
-            {
-                case RenderingStrategy.IterationsOut:
-                    GenerateMandelBrotIterations();
-                    break;
-
-                case RenderingStrategy.ColorOut:
-                    GenerateMandelBrotColors();
-                    break;
-            }
-        }
-
-        static void GenerateMandelBrotIterations()
-        {
             var nWidth = width / N;
-            kernel.SetValueArgument(2, ymin);
-            kernel.SetValueArgument(3, xmin);
-            kernel.SetValueArgument(4, nWidth);
-            kernel.SetValueArgument(5, maxIter);
 
-            // Execute kernel
-            for (var i = 0; i < N / kernelSize; ++i)
+            if (useDoublePrecision)
             {
-                for (var j = 0; j < N / kernelSize; ++j)
-                {
-                    queue.Execute(kernel, new long[] { i * kernelSize, j * kernelSize }, new long[] { kernelSize, kernelSize }, null, null);
-                }
+                kernel.SetValueArgument(4, ymin);
+                kernel.SetValueArgument(5, xmin);
+                kernel.SetValueArgument(6, nWidth);
             }
-            
-            // Read data back
-            unsafe
+            else
             {
-                fixed (int* retPtr = message)
-                {
-                    queue.Read(messageBuffer,
-                        false, 0,
-                        messageSize,
-                        new IntPtr(retPtr),
-                        null);
-
-                    queue.Finish();
-                }
+                kernel.SetValueArgument(4, (float)ymin);
+                kernel.SetValueArgument(5, (float)xmin);
+                kernel.SetValueArgument(6, (float)nWidth);
             }
-
-            // Write to bitmap
-            try
-            {
-                // Reserve the back buffer for updates.
-                writeableBitmap.Lock();
-
-                unsafe
-                {
-                    // Get a pointer to the back buffer.
-                    //b = buffer + i * writeableBitmap.BackBufferStride 
-                    IntPtr buffer = writeableBitmap.BackBuffer;
-
-                    for (int i = 0; i < writeableBitmap.Height * writeableBitmap.Width; ++i)
-                    {
-                        *((int*)buffer) = message[i] == maxIter ? 0 : gradient[message[i] % gradientLength];
-
-                        buffer += 4;
-                    }
-                }
-
-                // Specify the area of the bitmap that changed.
-                writeableBitmap.AddDirtyRect(new Int32Rect(0, 0, (int)writeableBitmap.Width, (int)writeableBitmap.Height));
-            }
-            finally
-            {
-                // Release the back buffer and make it available for display.
-                writeableBitmap.Unlock();
-            }
-        }
-
-        static void GenerateMandelBrotColors()
-        {
-            var nWidth = width / N;
-            kernel.SetValueArgument(4, ymin);
-            kernel.SetValueArgument(5, xmin);
-            kernel.SetValueArgument(6, nWidth);
             kernel.SetValueArgument(7, maxIter);
             kernel.SetValueArgument(8, coclorCycle);
 
             coclorCycle += colorCycleFrameIncrement;
-            
+
+            Stopwatch watch = new Stopwatch();
+
+            watch.Start();
 
             // Execute kernel
-            for (var i = 0; i < N / kernelSize; ++i)
-            {
-                for (var j = 0; j < N / kernelSize; ++j)
-                {
-                    queue.Execute(kernel, new long[] { i * kernelSize, j * kernelSize }, new long[] { kernelSize, kernelSize }, null, null);
-                }
-            }
+            queue.Execute(kernel, new long[] { 0, 0 }, new long[] { N, N }, null, null);
 
             // Read data back
             unsafe
@@ -355,6 +289,9 @@ namespace MandelCuda
                 }
             }
 
+            watch.Stop();
+            debugLabel.Content = $"{watch.ElapsedMilliseconds} ms";
+
             // Write to bitmap
             try
             {
@@ -363,10 +300,7 @@ namespace MandelCuda
 
                 unsafe
                 {
-                    // Get a pointer to the back buffer.
-                    //b = buffer + i * writeableBitmap.BackBufferStride 
                     IntPtr buffer = writeableBitmap.BackBuffer;
-
                     System.Runtime.InteropServices.Marshal.Copy(message, 0, buffer, (int)(writeableBitmap.Height * writeableBitmap.Width));
                 }
 

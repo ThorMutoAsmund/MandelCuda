@@ -251,11 +251,11 @@ namespace MandelCuda
             //var watch = System.Diagnostics.Stopwatch.StartNew();
 
             // Execute kernel
-            for (var i = 0; i < N / 32; ++i)
+            for (var i = 0; i < N / 128; ++i)
             {
-                for (var j = 0; j < N / 32; ++j)
+                for (var j = 0; j < N / 128; ++j)
                 {
-                    queue.Execute(kernel, new long[] { i * 32, j * 32 }, new long[] { 32, 32 }, null, null);
+                    queue.Execute(kernel, new long[] { i * 128, j * 128 }, new long[] { 128, 128 }, null, null);
                 }
             }
             

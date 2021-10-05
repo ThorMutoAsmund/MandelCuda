@@ -1,4 +1,4 @@
-﻿kernel void mandel(global read_only int* message, int N, float ymin, float xmin, float width, int maxiter)
+﻿kernel void mandel(global read_only int* message, int N, global read_only int* gradient, int gradientLength, float ymin, float xmin, float width, int maxiter, int colorCycleOffset)
 {
     int messageSize = N * N;
     float cy;
@@ -23,5 +23,12 @@
         y = 2 * xtmp * y + cy;
         iter++;
     }
-    message[i * N + j] = iter;
+    if (iter == maxiter)
+    {
+        message[i * N + j] = 0;
+    }
+    else
+    {
+        message[i * N + j] = gradient[(iter + colorCycleOffset) % gradientLength];
+    }
 }

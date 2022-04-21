@@ -1,6 +1,5 @@
 ﻿kernel void mandel(global read_only int* message, int N, global read_only int* gradient, int gradientLength, float ymin, float xmin, float width, int maxiter, int colorCycleOffset)
 {
-    int messageSize = N * N;
     float cy;
     float cx;
     float x;
